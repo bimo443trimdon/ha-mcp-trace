@@ -1,0 +1,31 @@
+name: "Home Assistant MCP Server"
+description: "MCP server for setting up and maintaining Home Assistant with AI assistants"
+version: "0.2.2"
+slug: ha_mcp
+image: "ghcr.io/roandegraaf/ha-mcp-{arch}"
+url: "https://github.com/roandegraaf/ha-mcp"
+arch:
+  - amd64
+  - aarch64
+homeassistant_api: true
+init: false
+ingress: true
+ingress_port: 8100
+panel_icon: "mdi:connection"
+panel_admin: true
+panel_title: "MCP Server"
+ports:
+  8099/tcp: 8099
+ports_description:
+  8099/tcp: "MCP HTTP port"
+options:
+  confirm_mode: "client"
+  read_only: false
+  enable_device_control: false
+  log_level: "INFO"
+schema:
+  api_key: "password?"
+  confirm_mode: "list(client|elicit)"
+  read_only: "bool"
+  enable_device_control: "bool"
+  log_level: "list(DEBUG|INFO|WARNING|ERROR)"

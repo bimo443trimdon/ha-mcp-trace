@@ -1,0 +1,16 @@
+configuration:
+  api_key:
+    name: API key
+    description: "Bearer token MCP clients must send. Leave empty to use an auto-generated key (shown in the MCP Server panel)."
+  confirm_mode:
+    name: Confirmation mode
+    description: "client = rely on your AI client's own tool-approval prompt. elicit = the server asks for confirmation itself. Needs a client with MCP elicitation on protocol 2025-11-25 or older; on newer connections every change is refused."
+  read_only:
+    name: Read-only
+    description: "Only expose tools that read configuration. No changes can be made."
+  enable_device_control:
+    name: Enable device control
+    description: "Expose the generic call_service tool (turning devices on/off etc.). Off by default, since this server is meant for setting Home Assistant up."
+  log_level:
+    name: Log level
+    description: "Server logging level"

@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MCP Connection Guide</title>
+<style>
+  :root {
+    --accent: #03a9f4;
+    --accent-dark: #0288d1;
+    --bg: #fafafa;
+    --surface: #fff;
+    --text: #212121;
+    --text-secondary: #616161;
+    --border: #e0e0e0;
+    --code-bg: #f3f4f6;
+    --success: #2e7d32;
+    --warn-bg: #fff4e5;
+    --warn-text: #8a4b00;
+    --radius: 8px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #111418;
+      --surface: #1b1f24;
+      --text: #e6e6e6;
+      --text-secondary: #a0a6ad;
+      --border: #2d333b;
+      --code-bg: #0d1117;
+      --warn-bg: #3a2a10;
+      --warn-text: #ffcc80;
+    }
+  }
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.55;
+    padding: 24px 16px;
+    max-width: 900px;
+    margin: 0 auto;
+  }
+  h1 { font-size: 1.4rem; font-weight: 600; margin-bottom: 4px; }
+  h2 { font-size: 1rem; font-weight: 600; margin: 28px 0 10px; }
+  .subtitle { color: var(--text-secondary); font-size: 0.9rem; margin-bottom: 20px; }
+  .panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px;
+    display: grid;
+    gap: 12px;
+  }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+  .row label { font-weight: 500; min-width: 110px; }
+  input {
+    flex: 1;
+    min-width: 0;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font: 0.9rem "SF Mono", Menlo, Consolas, monospace;
+    background: var(--bg);
+    color: var(--text);
+  }
+  input#port { flex: 0 0 90px; }
+  button {
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    padding: 7px 12px;
+    font-size: 0.8rem;
+    cursor: pointer;
+  }
+  button:hover { background: var(--accent-dark); }
+  button.secondary { background: transparent; color: var(--accent); border: 1px solid var(--border); }
+  button.copied { background: var(--success); }
+  .badges { display: flex; gap: 8px; flex-wrap: wrap; font-size: 0.78rem; }
+  .badge { border: 1px solid var(--border); border-radius: 999px; padding: 2px 10px; color: var(--text-secondary); }
+  .warn {
+    background: var(--warn-bg);
+    color: var(--warn-text);
+    border-radius: var(--radius);
+    padding: 12px 14px;
+    font-size: 0.85rem;
+    margin-top: 16px;
+  }
+  .tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+  .tab {
+    background: transparent;
+    color: var(--text);
+    border: 1px solid var(--border);
+    padding: 6px 12px;
+    font-size: 0.85rem;
+  }
+  .tab[aria-selected="true"] { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; }
+  .step { margin-bottom: 14px; }
+  .step:last-child { margin-bottom: 0; }
+  .hint { font-size: 0.88rem; color: var(--text-secondary); margin-bottom: 6px; }
+  .code {
+    position: relative;
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px 70px 12px 12px;
+    overflow-x: auto;
+    font: 0.82rem/1.5 "SF Mono", Menlo, Consolas, monospace;
+    white-space: pre;
+  }
+  .code button { position: absolute; top: 8px; right: 8px; }
+  .note { font-size: 0.82rem; color: var(--text-secondary); margin-top: 8px; }
+  code.inline { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 0.85em; }
+  #error { display: none; }
+</style>
+</head>
+<body>
+
+<h1>Connect an AI client</h1>
+<p class="subtitle">Copy a snippet below. Each one already includes this server's address and API key.</p>
+
+<div class="panel">
+  <div class="row">
+    <label for="hostname">Host / IP</label>
+    <input id="hostname" autocomplete="off" spellcheck="false">
+    <input id="port" inputmode="numeric" aria-label="Port">
+  </div>
+  <div class="row">
+    <label for="apikey">API key</label>
+    <input id="apikey" type="password" readonly>
+    <button class="secondary" id="reveal" type="button">Show</button>
+  </div>
+  <div class="badges" id="badges"></div>
+</div>
+
+<div class="warn" id="error"></div>
+
+<h2>Pick your client</h2>
+<div class="tabs" role="tablist" id="tabs"></div>
+<div class="card" id="panel"></div>
+
+<div class="warn">
+  <strong>Keep the API key private.</strong> Anyone who can reach port <span id="port-note">8099</span> with it gets full
+  admin access to Home Assistant. To rotate it, enter a new key in the add-on's Configuration tab and restart.
+  The connection is plain HTTP, so only use it on a network you trust, or put it behind a VPN or a reverse proxy with HTTPS.
+</div>
+
+<script>
+(function () {
+  const $ = (id) => document.getElementById(id);
+  const state = { key: "", tab: 0 };
+
+  $("hostname").value = window.location.hostname || "homeassistant.local";
+  $("port").value = "8099";
+
+  function url() {
+    const host = $("hostname").value.trim() || "homeassistant.local";
+    const port = $("port").value.trim() || "8099";
+    return "http://" + host + ":" + port + "/mcp";
+  }
+
+  function json(value) { return JSON.stringify(value, null, 2); }
+
+  function clients(u, key) {
+    const bearer = "Bearer " + key;
+    return [
+      {
+        name: "Claude Code",
+        steps: [
+          { hint: "Run this once in a terminal. It makes Home Assistant available in every project:",
+            code: "claude mcp add --transport http --scope user home-assistant " + u + ' \\\n  --header "Authorization: ' + bearer + '"' },
+          { hint: "Or share it with a single project only, via .mcp.json in the project root. Keep the key out of git by exporting HA_MCP_API_KEY in your shell:",
+            code: json({ mcpServers: { "home-assistant": { type: "http", url: u, headers: { Authorization: "Bearer ${HA_MCP_API_KEY}" } } } }) },
+          { hint: "Check that it connected:", code: "claude mcp list" }
+        ]
+      },
+      {
+        name: "Claude Desktop",
+        steps: [
+          { hint: "Open Settings > Developer > Edit Config and merge this into claude_desktop_config.json, then fully restart Claude Desktop. Requires Node.js.",
+            code: json({ mcpServers: { "home-assistant": {
+              command: "npx",
+              args: ["-y", "mcp-remote", u, "--allow-http", "--header", "Authorization:${AUTH_HEADER}"],
+              env: { AUTH_HEADER: bearer }
+            } } }) }
+        ],
+        note: "Settings > Connectors (custom connectors) will not work here: those connect from Anthropic's cloud and cannot reach a server on your home network."
+      },
+      {
+        name: "Cursor",
+        steps: [
+          { hint: "Add to ~/.cursor/mcp.json (global) or .cursor/mcp.json (project):",
+            code: json({ mcpServers: { "home-assistant": { url: u, headers: { Authorization: bearer } } } }) }
+        ]
+      },
+      {
+        name: "VS Code",
+        steps: [
+          { hint: "Add to .vscode/mcp.json:",
+            code: json({ servers: { "home-assistant": { type: "http", url: u, headers: { Authorization: bearer } } } }) }
+        ]
+      },
+      {
+        name: "Other",
+        steps: [
+          { hint: "Any MCP client with Streamable HTTP support. Endpoint:", code: u },
+          { hint: "Send this header with every request:", code: "Authorization: " + bearer }
+        ]
+      }
+    ];
+  }
+
+  function copyButton(text) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = "Copy";
+    btn.addEventListener("click", function () {
+      navigator.clipboard.writeText(text).then(function () {
+        btn.textContent = "Copied";
+        btn.classList.add("copied");
+        setTimeout(function () { btn.textContent = "Copy"; btn.classList.remove("copied"); }, 1800);
+      });
+    });
+    return btn;
+  }
+
+  function render() {
+    const list = clients(url(), state.key || "<API_KEY>");
+    $("port-note").textContent = $("port").value.trim() || "8099";
+
+    const tabs = $("tabs");
+    tabs.replaceChildren();
+    list.forEach(function (client, i) {
+      const tab = document.createElement("button");
+      tab.type = "button";
+      tab.className = "tab";
+      tab.setAttribute("role", "tab");
+      tab.setAttribute("aria-selected", String(i === state.tab));
+      tab.textContent = client.name;
+      tab.addEventListener("click", function () { state.tab = i; render(); });
+      tabs.appendChild(tab);
+    });
+
+    const client = list[state.tab];
+    const panel = $("panel");
+    panel.replaceChildren();
+    client.steps.forEach(function (step) {
+      const wrap = document.createElement("div");
+      wrap.className = "step";
+      const hint = document.createElement("div");
+      hint.className = "hint";
+      hint.textContent = step.hint;
+      const code = document.createElement("div");
+      code.className = "code";
+      code.textContent = step.code;
+      code.appendChild(copyButton(step.code));
+      wrap.append(hint, code);
+      panel.appendChild(wrap);
+    });
+    if (client.note) {
+      const note = document.createElement("div");
+      note.className = "note";
+      note.textContent = client.note;
+      panel.appendChild(note);
+    }
+  }
+
+  function badge(text) {
+    const el = document.createElement("span");
+    el.className = "badge";
+    el.textContent = text;
+    return el;
+  }
+
+  $("reveal").addEventListener("click", function () {
+    const field = $("apikey");
+    const hidden = field.type === "password";
+    field.type = hidden ? "text" : "password";
+    this.textContent = hidden ? "Hide" : "Show";
+  });
+  $("hostname").addEventListener("input", render);
+  $("port").addEventListener("input", render);
+
+  fetch("connection.json", { cache: "no-store" })
+    .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+    .then(function (info) {
+      state.key = info.api_key;
+      $("apikey").value = info.api_key;
+      $("port").value = String(info.port);
+      $("badges").append(
+        badge(info.read_only ? "Read-only" : "Read + write"),
+        badge("Confirmation: " + (info.confirm_mode === "elicit" ? "in-client prompt" : "client tool approval")),
+        badge(info.device_control ? "Device control on" : "Device control off")
+      );
+      render();
+    })
+    .catch(function (err) {
+      $("error").style.display = "block";
+      $("error").textContent = "Could not load the API key (" + err.message + "). Open this page from the Home Assistant sidebar.";
+      render();
+    });
+
+  render();
+})();
+</script>
+</body>
+</html>
