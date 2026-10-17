@@ -53,7 +53,7 @@ are not yet verified against a live Home Assistant.
 ### Home Assistant add-on (recommended)
 
 1. **Settings > Add-ons > Add-on Store**, overflow menu (**⋮**) >
-   **Repositories**, add `https://github.com/roandegraaf/ha-mcp`.
+   **Repositories**, add `https://github.com/bimo443trimdon/ha-mcp-trace`.
 2. Install **Home Assistant MCP Server** and click **Start**.
 3. Open the **MCP Server** panel in the sidebar. It shows your API key
    and ready-to-copy snippets for Claude Code, Claude Desktop, Cursor,
