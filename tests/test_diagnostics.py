@@ -1,11 +1,14 @@
 import json
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastmcp import Client, FastMCP
+from fastmcp.exceptions import ToolError
 
 from ha_mcp.tools.categories import register_category_tools
 from ha_mcp.tools.diagnostics import register_diagnostics_tools, summarize_trace
+from ha_mcp.tools import classify_tool
 from ha_mcp.util.redact import redact, tail
 
 
@@ -19,10 +22,10 @@ class FakeWS:
         return self.responses.get(msg_type)
 
 
-def _server(ws):
+def _server(ws, rest=None):
     @asynccontextmanager
     async def lifespan(_server):
-        yield {"ws": ws, "rest": None}
+        yield {"ws": ws, "rest": rest}
 
     mcp = FastMCP("t", lifespan=lifespan)
     register_diagnostics_tools(mcp)
@@ -30,10 +33,36 @@ def _server(ws):
     return mcp
 
 
-async def _call(ws, tool, args):
-    async with Client(_server(ws)) as client:
+async def _call(ws, tool, args, rest=None):
+    async with Client(_server(ws, rest)) as client:
         result = await client.call_tool(tool, args)
     return json.loads(result.content[0].text)
+
+
+class FakeRest:
+    def __init__(self, states, config, history=None, logbook=None):
+        self.states = states
+        self.config = config
+        self.history = history or {}
+        self.logbook = logbook or []
+        self.history_calls = []
+        self.logbook_calls = []
+        self.config_calls = []
+
+    async def get_states(self):
+        return self.states
+
+    async def get_automation_config(self, automation_id):
+        self.config_calls.append(automation_id)
+        return self.config
+
+    async def get_history(self, entity_id, start_time, end_time):
+        self.history_calls.append((entity_id, start_time, end_time))
+        return self.history.get(entity_id, [])
+
+    async def get_logbook(self, entity_id, start_time, end_time):
+        self.logbook_calls.append((entity_id, start_time, end_time))
+        return self.logbook
 
 
 def test_redact_patterns():
@@ -88,6 +117,229 @@ async def test_system_log_redacts_and_filters():
 async def test_list_traces_rejects_bad_domain():
     data = await _call(FakeWS({}), "list_traces", {"domain": "scene"})
     assert "error" in data
+
+
+async def test_automation_diagnosis_reports_trace_failure_and_evidence():
+    run_start = (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat()
+    ws = FakeWS({
+        "trace/list": [{
+            "run_id": "run-1",
+            "timestamp": {"start": run_start},
+        }],
+        "trace/get": {
+            "domain": "automation",
+            "item_id": "garage_door",
+            "run_id": "run-1",
+            "state": "stopped",
+            "script_execution": "error",
+            "timestamp": {"start": run_start},
+            "trace": {
+                "condition/0": [{
+                    "path": "condition/0",
+                    "result": {"result": True},
+                }],
+                "action/0": [{
+                    "path": "action/0",
+                    "error": "Service failed",
+                }],
+            },
+        },
+    })
+    rest = FakeRest(
+        states=[{
+            "entity_id": "automation.garage_door",
+            "state": "on",
+            "last_changed": "2026-10-18T04:00:00+00:00",
+            "attributes": {"id": "garage_door", "friendly_name": "Garage door"},
+        }],
+        config={
+            "id": "garage_door",
+            "alias": "Garage door",
+            "triggers": [{"trigger": "state", "entity_id": ["binary_sensor.garage"]}],
+            "conditions": [{"condition": "state", "entity_id": "cover.garage"}],
+            "actions": [{"action": "cover.open_cover", "target": {"entity_id": "cover.garage"}}],
+        },
+        history={
+            "binary_sensor.garage": [[{
+                "state": "on",
+                "last_changed": "2026-10-18T04:59:00+00:00",
+            }]],
+        },
+        logbook=[{
+            "when": "2026-10-18T05:00:01+00:00",
+            "name": "Garage door",
+            "entity_id": "automation.garage_door",
+            "message": "triggered",
+        }],
+    )
+
+    data = await _call(
+        ws,
+        "get_automation_diagnosis",
+        {"automation_id": "automation.garage_door"},
+        rest,
+    )
+
+    assert data["assessment"]["status"] == "execution_error_observed"
+    assert data["automation"]["config_id"] == "garage_door"
+    assert data["automation"]["state"] == "on"
+    assert data["evidence"]["traces_returned"][0]["failed_step"] == "action/0"
+    assert data["evidence"]["trigger_entity_ids"] == ["binary_sensor.garage"]
+    assert data["evidence"]["condition_entity_ids"] == ["cover.garage"]
+    assert data["evidence"]["entity_history"][0]["change_count"] == 1
+    assert data["evidence"]["logbook_entries"][0]["message"] == "triggered"
+    assert any(
+        item["source"] == "Home Assistant logbook"
+        for item in data["observations"]
+    )
+    assert ws.calls[0] == (
+        "trace/list",
+        {"domain": "automation", "item_id": "garage_door"},
+    )
+    assert rest.config_calls == ["garage_door"]
+    assert rest.logbook_calls[0][0] == "automation.garage_door"
+
+
+async def test_automation_diagnosis_handles_no_trace_without_claiming_never_ran():
+    ws = FakeWS({"trace/list": []})
+    rest = FakeRest(
+        states=[{
+            "entity_id": "automation.garage_door",
+            "state": "on",
+            "attributes": {"id": "garage_door"},
+        }],
+        config={
+            "id": "garage_door",
+            "triggers": [{"trigger": "state", "entity_id": "binary_sensor.garage"}],
+        },
+        history={"binary_sensor.garage": []},
+    )
+
+    data = await _call(
+        ws,
+        "get_automation_diagnosis",
+        {"automation_id": "garage_door"},
+        rest,
+    )
+
+    assert data["assessment"]["status"] == "no_trace_in_window"
+    assert "may not have triggered" in data["assessment"]["hypotheses"][0]
+    assert any("cannot establish" in item for item in data["limitations"])
+    assert any("No state changes" in item["fact"] for item in data["observations"])
+    assert rest.history_calls[0][0] == "binary_sensor.garage"
+
+
+async def test_automation_diagnosis_identifies_false_condition():
+    run_start = (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat()
+    ws = FakeWS({
+        "trace/list": [{
+            "run_id": "run-condition",
+            "timestamp": {"start": run_start},
+        }],
+        "trace/get": {
+            "domain": "automation",
+            "item_id": "garage_door",
+            "run_id": "run-condition",
+            "script_execution": "failed_conditions",
+            "timestamp": {"start": run_start},
+            "trace": {
+                "condition/0": [{
+                    "path": "condition/0",
+                    "result": {"result": False},
+                }],
+            },
+        },
+    })
+    rest = FakeRest(
+        states=[{
+            "entity_id": "automation.garage_door",
+            "state": "on",
+            "attributes": {"id": "garage_door"},
+        }],
+        config={
+            "id": "garage_door",
+            "conditions": [{"condition": "state", "entity_id": "cover.garage"}],
+        },
+    )
+
+    data = await _call(
+        ws,
+        "get_automation_diagnosis",
+        {"automation_id": "automation.garage_door"},
+        rest,
+    )
+
+    assert data["assessment"]["status"] == "condition_blocked"
+    assert any(
+        "evaluated false" in item["fact"] and item["source"] == "automation trace"
+        for item in data["observations"]
+    )
+
+
+async def test_automation_diagnosis_reports_logbook_activity_without_trace():
+    ws = FakeWS({"trace/list": []})
+    rest = FakeRest(
+        states=[{
+            "entity_id": "automation.garage_door",
+            "state": "on",
+            "attributes": {"id": "garage_door"},
+        }],
+        config={"id": "garage_door", "triggers": [{"trigger": "time"}]},
+        logbook=[{
+            "when": "2026-10-18T05:00:00+00:00",
+            "name": "Garage door",
+            "entity_id": "automation.garage_door",
+            "message": "triggered",
+        }],
+    )
+
+    data = await _call(
+        ws,
+        "get_automation_diagnosis",
+        {"automation_id": "automation.garage_door"},
+        rest,
+    )
+
+    assert data["assessment"]["status"] == "logbook_activity_without_trace"
+    assert any(
+        item["source"] == "Home Assistant logbook"
+        and "triggered" in item["fact"]
+        for item in data["observations"]
+    )
+
+
+@pytest.mark.parametrize(
+    ("automation_id", "lookback_minutes", "trace_limit", "message"),
+    [
+        ("", 60, 3, "non-empty"),
+        ("automation.garage/door", 60, 3, "non-empty"),
+        ("automation.garage_door", 0, 3, "lookback_minutes"),
+        ("automation.garage_door", 1441, 3, "lookback_minutes"),
+        ("automation.garage_door", 60, 0, "trace_limit"),
+        ("automation.garage_door", 60, 6, "trace_limit"),
+    ],
+)
+async def test_automation_diagnosis_validates_bounded_inputs(
+    automation_id, lookback_minutes, trace_limit, message
+):
+    async with Client(_server(FakeWS({}), FakeRest([], {}))) as client:
+        with pytest.raises(ToolError, match=message):
+            await client.call_tool(
+                "get_automation_diagnosis",
+                {
+                    "automation_id": automation_id,
+                    "lookback_minutes": lookback_minutes,
+                    "trace_limit": trace_limit,
+                },
+            )
+
+
+async def test_automation_diagnosis_is_registered_as_read_only_tool():
+    mcp = _server(FakeWS({}))
+    async with Client(mcp) as client:
+        tools = await client.list_tools()
+    tool = next(tool for tool in tools if tool.name == "get_automation_diagnosis")
+    assert classify_tool(tool.name)["readOnlyHint"] is True
 
 
 async def test_find_triggers_normalizes_target():

@@ -16,7 +16,7 @@ MCP server for setting up and maintaining Home Assistant — config flows, confi
 - Build system: hatchling (`pyproject.toml`)
 
 ## HA Add-on (`ha_mcp_addon/`)
-- **Pre-built Docker images** pushed to GHCR (`ghcr.io/roandegraaf/ha-mcp-{arch}`)
+- **Pre-built Docker images** pushed to GHCR (`ghcr.io/bimo443trimdon/ha-mcp-trace-{arch}`)
 - Architectures: amd64, aarch64 (no armv7 — Rust compilation fails on armv7 musl)
 - Base images: `ghcr.io/home-assistant/{arch}-base-python:3.12-alpine3.19`
 - **`init: false`** in config.yaml is required — HA Supervisor injects tini as PID 1 by default, which conflicts with the base image's s6-overlay init. Without this, you get `s6-overlay-suexec: fatal: can only run as pid 1`

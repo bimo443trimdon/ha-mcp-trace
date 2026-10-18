@@ -1,7 +1,9 @@
 """Diagnostics tools: repairs, system log, automation/script traces, target discovery."""
 
+import asyncio
 import json
 import logging
+from datetime import datetime, timedelta, timezone
 
 from fastmcp import Context
 
@@ -16,6 +18,9 @@ TARGET_KEYS = ("entity_id", "device_id", "area_id", "floor_id", "label_id")
 MAX_OUTPUT_CHARS = 30_000
 MAX_LOG_ENTRIES = 50
 MAX_TRACE_STEPS = 60
+MAX_DIAGNOSIS_TRACES = 5
+MAX_DIAGNOSIS_ENTITIES = 10
+MAX_HISTORY_CHANGES_PER_ENTITY = 10
 
 
 def _dump(payload) -> str:
@@ -104,6 +109,84 @@ def summarize_trace(trace: dict) -> dict:
         "steps": steps[:MAX_TRACE_STEPS],
         "steps_truncated": len(steps) > MAX_TRACE_STEPS,
     }
+
+
+def _parse_datetime(value) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _trace_started(trace: dict) -> datetime | None:
+    timestamp = trace.get("timestamp") or {}
+    return _parse_datetime(timestamp.get("start")) if isinstance(timestamp, dict) else None
+
+
+def _run_failed(run: dict) -> bool:
+    return bool(
+        run.get("error")
+        or run.get("failed_step")
+        or run.get("script_execution") in ("error", "failed")
+    )
+
+
+def _run_blocked_by_condition(run: dict) -> bool:
+    return run.get("script_execution") == "failed_conditions" or any(
+        item.get("result") is False for item in run.get("condition_results", [])
+    )
+
+
+def _automation_entity_references(value) -> list[str]:
+    references = set()
+
+    def visit(node):
+        if isinstance(node, dict):
+            for key, child in node.items():
+                if key == "entity_id":
+                    values = child if isinstance(child, list) else [child]
+                    references.update(
+                        item
+                        for item in values
+                        if isinstance(item, str) and "." in item
+                    )
+                else:
+                    visit(child)
+        elif isinstance(node, list):
+            for child in node:
+                visit(child)
+
+    visit(value)
+    return sorted(references)
+
+
+def _history_records(history) -> list[dict]:
+    if not isinstance(history, list):
+        raise RuntimeError("Home Assistant returned an unexpected entity history")
+    records = []
+    for group in history:
+        items = group if isinstance(group, list) else [group]
+        if any(not isinstance(record, dict) for record in items):
+            raise RuntimeError("Home Assistant returned a malformed entity history")
+        records.extend(items)
+    return records
+
+
+def _diagnosis_logbook_entry(entry: dict) -> dict:
+    summary = {"source": "Home Assistant logbook"}
+    summary.update(
+        {
+            key: entry.get(key)
+            for key in ("when", "timestamp", "name", "entity_id", "domain", "message")
+            if entry.get(key) is not None
+        }
+    )
+    return summary
 
 
 def register_diagnostics_tools(mcp_server):
@@ -213,6 +296,385 @@ def register_diagnostics_tools(mcp_server):
         ws, _rest = get_clients(ctx)
         trace = await ws.send_command("trace/get", domain=domain, item_id=item_id, run_id=run_id)
         return _dump(summarize_trace(trace or {}))
+
+    @mcp_server.tool()
+    async def get_automation_diagnosis(
+        ctx: Context,
+        automation_id: str,
+        lookback_minutes: int = 60,
+        trace_limit: int = 3,
+    ) -> str:
+        """Build an evidence-based diagnosis for a Home Assistant automation.
+
+        Accepts either the automation entity ID (automation.example) or its
+        config ID. Checks current enabled state, recent stored traces, trigger
+        and condition entity history, and matching logbook entries.
+
+        Missing traces do not prove that an automation never ran: Home
+        Assistant only retains a limited number of traces, and some trigger
+        types cannot be checked through entity history.
+        """
+        if not automation_id or "/" in automation_id or "\\" in automation_id:
+            raise ValueError("automation_id must be a non-empty automation ID")
+        if not 1 <= lookback_minutes <= 1440:
+            raise ValueError("lookback_minutes must be between 1 and 1440")
+        if not 1 <= trace_limit <= MAX_DIAGNOSIS_TRACES:
+            raise ValueError(
+                f"trace_limit must be between 1 and {MAX_DIAGNOSIS_TRACES}"
+            )
+
+        ws, rest = get_clients(ctx)
+        states = await rest.get_states()
+        automation_states = [
+            state
+            for state in states
+            if str(state.get("entity_id", "")).startswith("automation.")
+        ]
+        entity_state = None
+        if automation_id.startswith("automation."):
+            entity_state = next(
+                (
+                    state
+                    for state in automation_states
+                    if state.get("entity_id") == automation_id
+                ),
+                None,
+            )
+            if entity_state is None:
+                raise ValueError(f"Automation entity not found: {automation_id}")
+            config_id = (entity_state.get("attributes") or {}).get("id")
+            if not isinstance(config_id, str) or not config_id:
+                raise RuntimeError(
+                    f"Home Assistant did not provide the config ID for {automation_id}"
+                )
+        else:
+            config_id = automation_id
+            entity_state = next(
+                (
+                    state
+                    for state in automation_states
+                    if (state.get("attributes") or {}).get("id") == config_id
+                ),
+                None,
+            )
+
+        config = await rest.get_automation_config(config_id)
+        if not isinstance(config, dict):
+            raise RuntimeError("Home Assistant returned an unexpected automation config")
+
+        now = datetime.now(timezone.utc)
+        start = now - timedelta(minutes=lookback_minutes)
+        start_time = start.isoformat(timespec="seconds")
+        end_time = now.isoformat(timespec="seconds")
+
+        trigger_config = config.get("triggers", config.get("trigger", []))
+        condition_config = config.get("conditions", config.get("condition", []))
+        trigger_entities = _automation_entity_references(trigger_config)
+        condition_entities = _automation_entity_references(condition_config)
+        history_entities = sorted(set(trigger_entities + condition_entities))
+        included_history_entities = history_entities[:MAX_DIAGNOSIS_ENTITIES]
+
+        current_states = {
+            state.get("entity_id"): state
+            for state in states
+            if isinstance(state, dict) and state.get("entity_id")
+        }
+        history_results = await asyncio.gather(
+            *(
+                rest.get_history(entity_id, start_time, end_time)
+                for entity_id in included_history_entities
+            )
+        )
+        entity_history = []
+        for entity_id, history in zip(included_history_entities, history_results):
+            records = _history_records(history)
+            records.sort(
+                key=lambda record: _parse_datetime(
+                    record.get("last_changed") or record.get("last_updated")
+                )
+                or datetime.min.replace(tzinfo=timezone.utc)
+            )
+            state = current_states.get(entity_id) or {}
+            entity_history.append(
+                {
+                    "source": "Home Assistant entity history",
+                    "entity_id": entity_id,
+                    "current_state": state.get("state"),
+                    "current_last_changed": state.get("last_changed"),
+                    "window_start": start_time,
+                    "window_end": end_time,
+                    "change_count": len(records),
+                    "recent_changes": [
+                        {
+                            key: record.get(key)
+                            for key in ("state", "last_changed", "last_updated")
+                            if record.get(key) is not None
+                        }
+                        for record in records[-MAX_HISTORY_CHANGES_PER_ENTITY:]
+                    ],
+                }
+            )
+
+        entity_id = entity_state.get("entity_id") if entity_state else None
+        logbook_entries = []
+        if entity_id:
+            entries = await rest.get_logbook(entity_id, start_time, end_time)
+            if not isinstance(entries, list) or any(
+                not isinstance(entry, dict) for entry in entries
+            ):
+                raise RuntimeError("Home Assistant returned an unexpected logbook result")
+            logbook_entries = [
+                _diagnosis_logbook_entry(entry)
+                for entry in entries[-MAX_LOG_ENTRIES:]
+            ]
+
+        summaries = await ws.send_command(
+            "trace/list", domain="automation", item_id=config_id
+        )
+        if not isinstance(summaries, list) or any(
+            not isinstance(summary, dict) for summary in summaries
+        ):
+            raise RuntimeError("Home Assistant returned an unexpected trace list")
+        ordered_summaries = sorted(
+            summaries,
+            key=lambda trace: _trace_started(trace).timestamp()
+            if _trace_started(trace)
+            else 0,
+            reverse=True,
+        )
+        in_window = [
+            summary
+            for summary in ordered_summaries
+            if (
+                _trace_started(summary) is None
+                or _trace_started(summary) >= start
+            )
+        ]
+
+        runs = []
+        for summary in in_window[:trace_limit]:
+            run_id = summary.get("run_id")
+            if not isinstance(run_id, str) or not run_id:
+                raise RuntimeError("Home Assistant returned a trace without a run_id")
+            trace = await ws.send_command(
+                "trace/get",
+                domain="automation",
+                item_id=config_id,
+                run_id=run_id,
+            )
+            if not isinstance(trace, dict):
+                raise RuntimeError(f"Home Assistant returned an invalid trace: {run_id}")
+            runs.append(summarize_trace(trace))
+
+        observations = []
+        if entity_state:
+            observations.append(
+                {
+                    "fact": (
+                        "The automation is currently enabled."
+                        if entity_state.get("state") == "on"
+                        else f"The automation is currently {entity_state.get('state')}."
+                    ),
+                    "source": "automation entity state",
+                    "timestamp": entity_state.get("last_changed"),
+                }
+            )
+        for entry in logbook_entries:
+            entry_message = (
+                entry.get("message") or entry.get("name") or "activity recorded"
+            )
+            observations.append(
+                {
+                    "fact": f"Logbook entry: {entry_message}",
+                    "source": entry["source"],
+                    "timestamp": entry.get("when") or entry.get("timestamp"),
+                }
+            )
+        for run in runs:
+            observations.append(
+                {
+                    "fact": (
+                        f"Stored trace run {run.get('run_id')} reports "
+                        f"script_execution={run.get('script_execution')}."
+                    ),
+                    "source": "automation trace",
+                    "timestamp": (run.get("timestamp") or {}).get("start"),
+                }
+            )
+            if _run_failed(run):
+                failed_step = run.get("failed_step") or run.get("last_step") or "unknown step"
+                failure_detail = run.get("error") or (
+                    f"script_execution={run.get('script_execution')}"
+                )
+                observations.append(
+                    {
+                        "fact": (
+                            f"Run {run.get('run_id')} reported an execution error "
+                            f"at {failed_step}: {failure_detail}"
+                        ),
+                        "source": "automation trace",
+                        "timestamp": (run.get("timestamp") or {}).get("start"),
+                    }
+                )
+            if run.get("script_execution") == "failed_conditions" and not any(
+                item.get("result") is False
+                for item in run.get("condition_results", [])
+            ):
+                observations.append(
+                    {
+                        "fact": (
+                            f"Home Assistant reports that conditions blocked run "
+                            f"{run.get('run_id')}."
+                        ),
+                        "source": "automation trace",
+                        "timestamp": (run.get("timestamp") or {}).get("start"),
+                    }
+                )
+            for condition in run.get("condition_results", []):
+                if condition.get("result") is False:
+                    observations.append(
+                        {
+                            "fact": (
+                                f"Condition {condition.get('path')} evaluated false "
+                                f"in run {run.get('run_id')}."
+                            ),
+                            "source": "automation trace",
+                            "timestamp": (run.get("timestamp") or {}).get("start"),
+                        }
+                    )
+
+        failed_runs = [run for run in runs if _run_failed(run)]
+        blocked_runs = [run for run in runs if _run_blocked_by_condition(run)]
+        if failed_runs:
+            status = "execution_error_observed"
+            summary = (
+                f"{len(failed_runs)} of {len(runs)} retrieved stored run(s) "
+                "reported an execution error."
+            )
+        elif blocked_runs:
+            status = "condition_blocked"
+            summary = (
+                "At least one retrieved run was blocked by automation conditions."
+            )
+        elif entity_state and entity_state.get("state") == "off":
+            status = "automation_disabled"
+            summary = "The automation is currently disabled."
+        elif entity_state and entity_state.get("state") != "on":
+            status = "automation_state_unknown"
+            summary = (
+                f"The automation state is {entity_state.get('state')!r}; "
+                "its enabled status cannot be confirmed."
+            )
+        elif not runs and logbook_entries:
+            status = "logbook_activity_without_trace"
+            entry_word = "entry" if len(logbook_entries) == 1 else "entries"
+            summary = (
+                f"No stored trace was retrieved, but {len(logbook_entries)} matching "
+                f"logbook {entry_word} were found in the selected window."
+            )
+        elif not runs:
+            status = "no_trace_in_window"
+            summary = (
+                "No stored automation trace with a known run time in the selected "
+                "window was found."
+            )
+        else:
+            status = "no_failure_observed"
+            summary = (
+                "The retrieved stored runs show no explicit failed step or false "
+                "condition; this does not confirm that the expected trigger occurred."
+            )
+
+        hypotheses = []
+        limitations = []
+        if not runs:
+            if logbook_entries:
+                hypotheses.append(
+                    "The logbook activity may correspond to an automation run whose "
+                    "trace is no longer retained; inspect the entries before "
+                    "concluding whether the expected action occurred."
+                )
+            else:
+                hypotheses.append(
+                    "The automation may not have triggered in this interval, or Home "
+                    "Assistant may no longer retain a trace for that run."
+                )
+            limitations.append(
+                "An empty trace result cannot establish that the automation never "
+                "ran; Home Assistant retains only a limited number of traces."
+            )
+            if not trigger_entities:
+                limitations.append(
+                    "No direct entity IDs were found in the configured triggers. "
+                    "Time, event, device, template, and other trigger types cannot "
+                    "be verified from entity history alone."
+                )
+            elif not any(item["change_count"] for item in entity_history):
+                observations.append(
+                    {
+                        "fact": (
+                            "No state changes were returned for the referenced "
+                            "trigger/condition entities during the selected interval."
+                        ),
+                        "source": "entity history",
+                        "timestamp": start_time,
+                    }
+                )
+                limitations.append(
+                    "No matching entity changes is not proof that a trigger could "
+                    "not occur; history may be incomplete or the trigger may use "
+                    "other conditions."
+                )
+        if len(history_entities) > len(included_history_entities):
+            limitations.append(
+                f"Entity history was capped at {MAX_DIAGNOSIS_ENTITIES} referenced "
+                "entities."
+            )
+        if any(_trace_started(trace) is None for trace in ordered_summaries):
+            limitations.append(
+                "Some stored traces had no parseable start timestamp and could not "
+                "be reliably assigned to the requested time window."
+            )
+
+        result = {
+            "automation": {
+                "entity_id": entity_id,
+                "config_id": config_id,
+                "alias": config.get("alias"),
+                "state": entity_state.get("state") if entity_state else None,
+                "config": {
+                    key: config[key]
+                    for key in ("triggers", "trigger", "conditions", "condition", "actions", "action")
+                    if key in config
+                },
+            },
+            "time_window": {
+                "start": start_time,
+                "end": end_time,
+                "lookback_minutes": lookback_minutes,
+            },
+            "assessment": {
+                "status": status,
+                "summary": summary,
+                "hypotheses": hypotheses,
+            },
+            "observations": observations,
+            "evidence": {
+                "stored_trace_count_in_window": sum(
+                    _trace_started(trace) is not None for trace in in_window
+                ),
+                "stored_trace_count_with_unknown_timestamp": sum(
+                    _trace_started(trace) is None for trace in in_window
+                ),
+                "traces_returned": runs,
+                "trigger_entity_ids": trigger_entities,
+                "condition_entity_ids": condition_entities,
+                "entity_history": entity_history,
+                "logbook_entries": logbook_entries,
+            },
+            "limitations": limitations,
+        }
+        return redact(_dump(result))
 
     async def _for_target(ctx: Context, command: str, target: str, expand_group: bool) -> str:
         parsed = _parse_target(target)

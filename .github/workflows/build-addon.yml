@@ -18,7 +18,7 @@ on:
   workflow_dispatch:
 
 env:
-  IMAGE_BASE: ghcr.io/roandegraaf/ha-mcp
+  IMAGE_BASE: ghcr.io/bimo443trimdon/ha-mcp-trace
 
 jobs:
   test:

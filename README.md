@@ -30,7 +30,8 @@ It is aimed at configuration, not day-to-day device control. The generic
   entries, error logs, and render Jinja2 templates
 - **Automation management** -- full CRUD, toggle, duplicate, and
   conflict detection for automations; retrieve recent automation
-  traces for debugging
+  traces and build evidence-based diagnoses for failed runs or
+  automations that may not have triggered
 - **Script management** -- create, read, update, and delete scripts
 - **Scene management** -- create, read, update, and delete scenes
 - **Helper management** -- create, update, and delete input helpers
@@ -60,7 +61,9 @@ It is aimed at configuration, not day-to-day device control. The generic
 - **Dashboards and blueprints** -- views, cards, blueprint import and
   instantiation
 - **Diagnostics** -- repairs, structured system log, automation/script
-  traces, and discovery of the triggers, conditions and services
+  traces, one-call automation diagnoses combining enabled state,
+  traces, trigger/condition entity history, and matching logbook
+  evidence; discovery of the triggers, conditions and services
   available for a target
 - **Backups** -- list, create, delete, and configure automatic backups
 - **System** -- reload domains, restart core after a config check,
@@ -142,6 +145,17 @@ export HA_MCP_API_KEY="$(python3 -c 'import secrets; print(secrets.token_urlsafe
 ha-mcp            # serves http://127.0.0.1:8099/mcp
 ```
 
+### Automation debugging
+
+Use `get_automation_diagnosis` with an automation entity ID such as
+`automation.garage_door` (or its config ID) to gather a bounded set of
+recent traces, the current enabled state, recent history for entities
+referenced by its triggers and conditions, and matching logbook entries.
+The result separates observed facts from hypotheses and includes evidence
+sources and timestamps. An empty trace result is not proof that an
+automation never ran: Home Assistant retains a limited number of traces,
+and entity history cannot verify every trigger type.
+
 ## Configuration
 
 | Variable | Default | Description |
@@ -162,7 +176,7 @@ ha-mcp            # serves http://127.0.0.1:8099/mcp
 
 - [Configuration](docs/configuration.md) -- environment variables,
   transport options, and client setup
-- [Tools reference](docs/tools.md) -- all 79 MCP tools with
+- [Tools reference](docs/tools.md) -- all MCP tools with
   parameters and descriptions
 - [Prompts reference](docs/prompts.md) -- guided workflow
   templates

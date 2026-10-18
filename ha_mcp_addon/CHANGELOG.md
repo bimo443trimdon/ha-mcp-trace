@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.3
+
+### Added
+- `get_automation_diagnosis` combines automation configuration, enabled
+  state, recent traces, referenced entity history, and logbook evidence.
+  Its assessment separates observed facts from hypotheses and explains
+  the limitations of diagnosing automations with no retained traces.
+
 ## 0.1.10
 
 - Expose recent Home Assistant automation traces through the

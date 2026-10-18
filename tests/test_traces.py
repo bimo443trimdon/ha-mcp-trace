@@ -96,3 +96,9 @@ async def test_trace_tool_is_registered_on_server():
     registered_names = {tool.name for tool in await server.list_tools()}
 
     assert "get_automation_traces" in registered_names
+    assert "get_automation_diagnosis" in registered_names
+    diagnosis = next(
+        tool for tool in await server.list_tools()
+        if tool.name == "get_automation_diagnosis"
+    )
+    assert diagnosis.annotations.read_only_hint is True

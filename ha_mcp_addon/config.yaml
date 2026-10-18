@@ -1,9 +1,9 @@
 name: "Home Assistant MCP Server"
 description: "MCP server for setting up and maintaining Home Assistant with AI assistants"
-version: "0.2.2"
+version: "0.2.3"
 slug: ha_mcp
-image: "ghcr.io/roandegraaf/ha-mcp-{arch}"
-url: "https://github.com/roandegraaf/ha-mcp"
+image: "ghcr.io/bimo443trimdon/ha-mcp-trace-{arch}"
+url: "https://github.com/bimo443trimdon/ha-mcp-trace"
 arch:
   - amd64
   - aarch64

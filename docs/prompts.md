@@ -121,14 +121,15 @@ a systematic diagnostic process.
 
 The workflow follows these steps:
 
-1. Retrieve the automation's full configuration and display its
-   triggers, conditions, and actions.
-2. Validate the configuration for structural errors or invalid
-   values.
-3. Check the current state of all referenced entities to verify
-   they exist and are available.
-4. Check the logbook for recent executions, failures, and
-   frequency patterns.
-5. Check the error log for related warnings or errors.
-6. Provide a diagnosis with the most likely cause and offer
-   specific fixes.
+1. Start with `get_automation_diagnosis` to gather configuration,
+   enabled state, recent traces, referenced entity history, and logbook
+   evidence in one bounded request.
+2. Explain observed facts separately from hypotheses, citing evidence
+   sources and timestamps.
+3. If no trace exists, explain that trace retention is limited and do
+   not claim that the automation never ran. State what trigger evidence
+   could not be checked.
+4. If evidence is insufficient, ask for the relevant time window or
+   additional entities/events before concluding.
+5. Suggest a specific fix only when supported by the evidence, and ask
+   for approval before applying any change.

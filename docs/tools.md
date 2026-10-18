@@ -1,11 +1,9 @@
 # Tools reference
 
-Home Assistant MCP Server exposes 79 tools organized into 10
-categories. Each tool accepts a `ctx` parameter automatically
-provided by the MCP framework -- you don't need to supply it.
-The server exposes 109 tools by default (110 with `enable_device_control`,
-53 in `read_only` mode). Every tool also receives a `ctx` parameter from
-the MCP framework; you never supply it. All tools return JSON strings.
+Home Assistant MCP Server exposes tools organized into 10 categories.
+The available tools depend on the server version and enabled features.
+Each tool accepts a `ctx` parameter automatically provided by the MCP
+framework -- you don't need to supply it. All tools return JSON strings.
 
 Each tool is tagged with MCP tool annotations, so clients can tell
 read-only tools from ones that change things:
@@ -784,6 +782,20 @@ details, including trigger data and action results.
 | `item_id` | `string` | Yes |
 | `run_id` | `string` | Yes |
 
+### `get_automation_diagnosis`
+
+*read-only*. Diagnose an automation using its current enabled state,
+recent stored traces, history for referenced trigger/condition entities,
+and matching logbook entries. The result separates observations from
+hypotheses, cites evidence sources and timestamps, and explains why an
+empty trace result does not prove the automation never ran.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `automation_id` | `string` | Yes | Automation entity ID (for example, `automation.garage_door`) or config ID |
+| `lookback_minutes` | `integer` | No | Evidence window, 1–1440 minutes (default 60) |
+| `trace_limit` | `integer` | No | Maximum recent traces to retrieve, 1–5 (default 3) |
+
 ### `ignore_repair`
 
 *writes*. Ignore (or un-ignore) a Repairs issue.
@@ -1002,4 +1014,3 @@ details, including trigger data and action results.
 | `domain` | `string` | Yes |
 | `service` | `string` | Yes |
 | `data` | `string` | No |
-

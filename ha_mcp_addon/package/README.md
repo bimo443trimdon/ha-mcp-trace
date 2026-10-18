@@ -24,8 +24,8 @@ It is aimed at configuration, not day-to-day device control. The generic
 - **Dashboards and blueprints** -- views, cards, blueprint import and
   instantiation
 - **Diagnostics** -- repairs, structured system log, automation/script
-  traces, and discovery of the triggers, conditions and services
-  available for a target
+  traces, one-call evidence-based automation diagnoses, and discovery
+  of the triggers, conditions and services available for a target
 - **Backups** -- list, create, delete, and configure automatic backups
 - **System** -- reload domains, restart core after a config check,
   system health
